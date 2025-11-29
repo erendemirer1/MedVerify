@@ -6,14 +6,7 @@ import {
   useSignAndExecuteTransaction,
 } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
-
-// ====== GÜNCELLEME: ESCROW SİSTEMİ ======
-const AIDCHAIN_PACKAGE_ID =
-  '0x7615b059d8fc726662be2280a8e336338c82730be2070972d61fa84906a08559';
-
-// Yeni Registry ID (Escrow sistemi için)
-const DEFAULT_REGISTRY_ID =
-  '0xe05fd6498b97b938df1b411b0ecd0e3c7784c5ed38e463e848f0ef1c9658c83e';
+import { AIDCHAIN_PACKAGE_ID, AIDCHAIN_REGISTRY_ID } from './config';
 
 type AidPackageInfo = {
   id: string;
@@ -26,7 +19,11 @@ type AidPackageInfo = {
   created_at_epoch: string;
   updated_at_epoch: string;
   donation_amount: string;
-  is_locked: boolean; // Bağış hala escrow'da mı?
+  is_locked: boolean;
+  delivery_note?: string;
+  coordinator_approved: boolean;
+  recipient_approved: boolean;
+  recipient?: string;
 };
 
 function statusLabel(s: number): string {
@@ -41,11 +38,12 @@ export function CoordinatorPanel() {
   const client = useSuiClient();
   const { mutate: signAndExecute } = useSignAndExecuteTransaction();
 
-  const [registryId, setRegistryId] = useState(DEFAULT_REGISTRY_ID);
+  const [registryId, setRegistryId] = useState(AIDCHAIN_REGISTRY_ID);
   const [loading, setLoading] = useState(false);
   const [packages, setPackages] = useState<AidPackageInfo[]>([]);
   const [statusMsg, setStatusMsg] = useState<string>('');
   const [proofInputs, setProofInputs] = useState<Record<string, string>>({});
+  const [deliveryNotes, setDeliveryNotes] = useState<Record<string, string>>({});
   const [lastTx, setLastTx] = useState<string | null>(null);
 
   const handleLoadPackages = async () => {
@@ -100,6 +98,12 @@ export function CoordinatorPanel() {
         const lockedDonation = f.locked_donation;
         const isLocked = lockedDonation && lockedDonation.type === 'some';
         
+        // Delivery note kontrolü
+        const deliveryNote = f.delivery_note?.type === 'some' ? f.delivery_note.fields : undefined;
+        
+        // Recipient kontrolü
+        const recipient = f.recipient?.type === 'some' ? f.recipient.fields : undefined;
+        
         list.push({
           id: f.id.id,
           description: f.description,
@@ -112,6 +116,10 @@ export function CoordinatorPanel() {
           updated_at_epoch: String(f.updated_at_epoch),
           donation_amount: String(f.donation_amount || '0'),
           is_locked: isLocked,
+          delivery_note: deliveryNote,
+          coordinator_approved: f.coordinator_approved ?? false,
+          recipient_approved: f.recipient_approved ?? false,
+          recipient: recipient,
         });
       }
 
@@ -130,6 +138,97 @@ export function CoordinatorPanel() {
       ...prev,
       [id]: value,
     }));
+  };
+
+  const handleDeliveryNoteChange = (id: string, value: string) => {
+    setDeliveryNotes((prev) => ({
+      ...prev,
+      [id]: value,
+    }));
+  };
+
+  // Yeni: Coordinator onayı
+  const handleCoordinatorApprove = (p: AidPackageInfo) => {
+    if (!account) {
+      alert('Koordinatör işlemi için önce cüzdan bağla.');
+      return;
+    }
+
+    if (p.coordinator.toLowerCase() !== account.address.toLowerCase()) {
+      alert('Sadece coordinator onaylayabilir!');
+      return;
+    }
+
+    const note = deliveryNotes[p.id] || 'Paket hazır';
+
+    const txb = new Transaction();
+    txb.moveCall({
+      target: `${AIDCHAIN_PACKAGE_ID}::aidchain::approve_as_coordinator`,
+      arguments: [
+        txb.object(p.id),
+        txb.pure.string(note),
+      ],
+    });
+
+    setLoading(true);
+    setStatusMsg('Coordinator onayı gönderiliyor...');
+    setLastTx(null);
+
+    signAndExecute(
+      { transaction: txb },
+      {
+        onSuccess: (result: any) => {
+          setLoading(false);
+          if (result.digest) {
+            setLastTx(result.digest);
+            setStatusMsg('✅ Coordinator onayı başarılı!');
+            setTimeout(() => handleLoadPackages(), 2000);
+          }
+        },
+        onError: (e: any) => {
+          setLoading(false);
+          console.error('Coordinator onay hatası:', e);
+          setStatusMsg('❌ Coordinator onayı başarısız: ' + e.message);
+        },
+      },
+    );
+  };
+
+  // Yeni: Recipient onayı
+  const handleRecipientApprove = (p: AidPackageInfo) => {
+    if (!account) {
+      alert('Recipient işlemi için önce cüzdan bağla.');
+      return;
+    }
+
+    const txb = new Transaction();
+    txb.moveCall({
+      target: `${AIDCHAIN_PACKAGE_ID}::aidchain::approve_as_recipient`,
+      arguments: [txb.object(p.id)],
+    });
+
+    setLoading(true);
+    setStatusMsg('Recipient onayı gönderiliyor...');
+    setLastTx(null);
+
+    signAndExecute(
+      { transaction: txb },
+      {
+        onSuccess: (result: any) => {
+          setLoading(false);
+          if (result.digest) {
+            setLastTx(result.digest);
+            setStatusMsg('✅ Recipient onayı başarılı!');
+            setTimeout(() => handleLoadPackages(), 2000);
+          }
+        },
+        onError: (e: any) => {
+          setLoading(false);
+          console.error('Recipient onay hatası:', e);
+          setStatusMsg('❌ Recipient onayı başarısız: ' + e.message);
+        },
+      },
+    );
   };
 
   const handleMarkDelivered = (p: AidPackageInfo) => {
@@ -281,9 +380,22 @@ export function CoordinatorPanel() {
       )}
 
       <div className="registry-section">
+        <div className="alert alert-info" style={{ marginBottom: '1rem' }}>
+          <span>ℹ️</span>
+          <div>
+            <strong>Registry ID Otomatik Yüklendi</strong>
+            <div style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}>
+              AidChain Global Registry: <code style={{ background: '#e0e7ff', padding: '0.25rem 0.5rem', borderRadius: '4px' }}>{AIDCHAIN_REGISTRY_ID}</code>
+            </div>
+            <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: '#666' }}>
+              💡 Bu ID tüm AidChain paketlerini içerir. Farklı bir registry kullanmak istersen aşağıdan değiştirebilirsin.
+            </div>
+          </div>
+        </div>
+        
         <div className="form-group">
           <label className="form-label">
-            Registry ID
+            Registry ID (İsteğe Bağlı Değiştir)
             <input
               className="form-input"
               value={registryId}
@@ -446,11 +558,78 @@ export function CoordinatorPanel() {
                 </div>
               )}
 
+              {/* Onay Durumları */}
+              {p.status !== 2 && (
+                <div className="alert alert-info" style={{ marginTop: '1rem' }}>
+                  <span>📋</span>
+                  <div>
+                    <strong>Çoklu İmza Durumu:</strong>
+                    <div style={{ marginTop: '0.5rem', display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        {p.coordinator_approved ? '✅' : '⏳'}
+                        <span>Coordinator Onayı</span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        {p.recipient_approved ? '✅' : '⏳'}
+                        <span>Recipient Onayı</span>
+                      </div>
+                    </div>
+                    {p.delivery_note && (
+                      <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', fontStyle: 'italic' }}>
+                        📝 Not: {p.delivery_note}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Coordinator Onay Bölümü */}
+              {p.status !== 2 && !p.coordinator_approved && (
+                <div className="proof-section">
+                  <div className="form-group">
+                    <label className="form-label">
+                      🏢 Coordinator Onayı + Teslim Notu
+                      <textarea
+                        className="form-input"
+                        placeholder="Örn: Paket hazırlandı, teslime hazır"
+                        value={deliveryNotes[p.id] ?? ''}
+                        onChange={(e) => handleDeliveryNoteChange(p.id, e.target.value)}
+                        rows={2}
+                      />
+                    </label>
+                  </div>
+                  <button
+                    className="button button-primary"
+                    onClick={() => handleCoordinatorApprove(p)}
+                    disabled={loading}
+                  >
+                    ✅ Coordinator Onayla
+                  </button>
+                </div>
+              )}
+
+              {/* Recipient Onay Bölümü */}
+              {p.status !== 2 && !p.recipient_approved && (
+                <div className="proof-section">
+                  <button
+                    className="button button-success"
+                    onClick={() => handleRecipientApprove(p)}
+                    disabled={loading}
+                    style={{ marginTop: '0.5rem' }}
+                  >
+                    ✅ Recipient Onayla
+                  </button>
+                  <p style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.5rem' }}>
+                    💡 Recipient olarak bu paketi onaylayabilirsin
+                  </p>
+                </div>
+              )}
+
               {p.status !== 2 && (
                 <div className="proof-section">
                   <div className="form-group">
                     <label className="form-label">
-                      Yeni Walrus Proof URL
+                      📸 Teslim Proof URL (Walrus)
                       <input
                         className="form-input"
                         placeholder="https://walrus.link/..."
@@ -459,10 +638,23 @@ export function CoordinatorPanel() {
                       />
                     </label>
                   </div>
+                  <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '0.5rem' }}>
+                    ⚠️ Teslim edebilmek için:
+                    <ul style={{ margin: '0.5rem 0', paddingLeft: '1.5rem' }}>
+                      <li>✅ Coordinator onaylamış olmalı</li>
+                      <li>✅ Recipient onaylamış olmalı</li>
+                      <li>✅ Proof URL girilmiş olmalı</li>
+                      <li>✅ Minimum 1 epoch (~24 saat) geçmiş olmalı</li>
+                    </ul>
+                  </div>
                   <button
                     onClick={() => handleMarkDelivered(p)}
-                    disabled={loading || !account}
+                    disabled={loading || !account || !p.coordinator_approved || !p.recipient_approved}
                     className="btn btn-success btn-block"
+                    style={{ 
+                      opacity: (!p.coordinator_approved || !p.recipient_approved) ? 0.5 : 1,
+                      cursor: (!p.coordinator_approved || !p.recipient_approved) ? 'not-allowed' : 'pointer'
+                    }}
                   >
                     {loading && <span className="spinner"></span>}
                     ✅ Teslim Edildi Olarak İşaretle

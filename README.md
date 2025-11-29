@@ -165,11 +165,45 @@ npm run build
 
 ## 📊 Deployed Instances
 
-### Testnet
-- **Package ID**: `0x7615b059d8fc726662be2280a8e336338c82730be2070972d61fa84906a08559`
-- **Registry ID**: `0xe05fd6498b97b938df1b411b0ecd0e3c7784c5ed38e463e848f0ef1c9658c83e`
+### Testnet (V2 - Gelişmiş Escrow Sistemi)
+- **Package ID**: `0x25e720914e3a022de71e49469d1b38787fd08293bb6756c2dad838847ff12aff`
+- **Registry ID**: `0xc31120749a5e25dae01d0b8f3094188ab67911546828cde189c791e4d69130ff`
 - **Network**: Sui Testnet
 - **Explorer**: https://testnet.suivision.xyz/
+
+### 📍 Registry ID Nasıl Bulunur?
+
+Registry ID **frontend'e zaten gömülü** (`src/config.ts`). Kullanıcıların manuel olarak girmesine gerek yok!
+
+**Opsiyonel:** Farklı bir registry kullanmak istersen:
+
+1. **Sui CLI ile sorgulama**:
+```bash
+sui client object 0xc31120749a5e25dae01d0b8f3094188ab67911546828cde189c791e4d69130ff
+```
+
+2. **SuiVision'da görüntüleme**:
+```
+https://testnet.suivision.xyz/object/0xc31120749a5e25dae01d0b8f3094188ab67911546828cde189c791e4d69130ff
+```
+
+3. **Coordinator Panel'de değiştirme**:
+   - UI'da "Registry ID (İsteğe Bağlı Değiştir)" alanından güncelleyebilirsin
+   - Default registry tüm paketleri içerir
+
+### 🔄 Yeni Registry Oluşturma (STK'lar için):
+
+Kendi bağımsız registry'nizi oluşturmak isterseniz:
+
+```bash
+sui client call \
+  --package 0x25e720914e3a022de71e49469d1b38787fd08293bb6756c2dad838847ff12aff \
+  --module aidchain \
+  --function init_registry \
+  --gas-budget 10000000
+```
+
+Dönen `ObjectID`'yi kopyala ve `src/config.ts`'e ekle.
 
 ## 🎨 UI Tasarım
 
