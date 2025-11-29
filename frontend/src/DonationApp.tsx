@@ -6,10 +6,11 @@ import { RecipientRegistration } from './RecipientRegistration';
 import { RecipientList } from './RecipientList';
 import { VerifierManagement } from './VerifierManagement';
 import { DAOPanel } from './DAOPanel';
+import { Dashboard } from './Dashboard';
 import { AIDCHAIN_REGISTRY_ID } from './config';
 
 export function DonationApp() {
-  const [activeTab, setActiveTab] = useState<'donate' | 'packages' | 'register' | 'recipients' | 'dao-members' | 'dao-voting'>('donate');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'donate' | 'packages' | 'register' | 'recipients' | 'dao-members' | 'dao-voting'>('dashboard');
 
   return (
     <div className="app-container">
@@ -47,6 +48,12 @@ export function DonationApp() {
       </div>
 
       <div className="tab-nav">
+        <button
+          onClick={() => setActiveTab('dashboard')}
+          className={`tab-button ${activeTab === 'dashboard' ? 'active' : ''}`}
+        >
+          📊 Dashboard
+        </button>
         <button
           onClick={() => setActiveTab('donate')}
           className={`tab-button ${activeTab === 'donate' ? 'active' : ''}`}
@@ -86,6 +93,12 @@ export function DonationApp() {
       </div>
 
       <main className="main-layout">
+        {activeTab === 'dashboard' && (
+          <section style={{ gridColumn: '1 / -1' }}>
+            <Dashboard />
+          </section>
+        )}
+
         {activeTab === 'donate' && (
           <section style={{ gridColumn: '1 / -1' }}>
             <DonationForm />
