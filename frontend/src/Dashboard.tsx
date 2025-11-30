@@ -214,6 +214,9 @@ export function Dashboard() {
 
   return (
     <div>
+      {/* Admin Registry Creation */}
+      {/* Registry creation section removed - using fixed registry */}
+
       {/* Header */}
       <div style={{ 
         display: 'flex', 

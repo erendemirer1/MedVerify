@@ -5,10 +5,11 @@ import {
   useSignAndExecuteTransaction,
 } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
-import { AIDCHAIN_PACKAGE_ID, AIDCHAIN_REGISTRY_ID } from './config';
+import { AIDCHAIN_PACKAGE_ID, AIDCHAIN_REGISTRY_ID, REGISTRY_INITIAL_SHARED_VERSION } from './config';
 
 type AidPackageInfo = {
   id: string;
+  version: number;
   description: string;
   location: string;
   status: number;
@@ -25,6 +26,20 @@ type AidPackageInfo = {
   recipient?: string;
 };
 
+type RecipientProfile = {
+  id: string;
+  owner: string;
+  name: string;
+  location: string;
+  isVerified: boolean;
+};
+
+const STATUS_LABELS: Record<number, { label: string; color: string; bg: string }> = {
+  0: { label: 'Created', color: '#1e40af', bg: '#dbeafe' },
+  1: { label: 'In Transit', color: '#92400e', bg: '#fef3c7' },
+  2: { label: 'Delivered', color: '#166534', bg: '#dcfce7' },
+};
+
 export function CoordinatorPanel() {
   const account = useCurrentAccount();
   const client = useSuiClient();
@@ -32,11 +47,15 @@ export function CoordinatorPanel() {
 
   const [loading, setLoading] = useState(false);
   const [packages, setPackages] = useState<AidPackageInfo[]>([]);
+  const [verifiedRecipients, setVerifiedRecipients] = useState<RecipientProfile[]>([]);
   const [statusMsg, setStatusMsg] = useState<string>('');
   const [deliveryNotes, setDeliveryNotes] = useState<Record<string, string>>({});
+  const [selectedRecipients, setSelectedRecipients] = useState<Record<string, string>>({});
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   useEffect(() => {
     loadPackages();
+    loadVerifiedRecipients();
   }, []);
 
   const loadPackages = async () => {
@@ -65,7 +84,7 @@ export function CoordinatorPanel() {
 
       const objs = await client.multiGetObjects({
         ids,
-        options: { showContent: true },
+        options: { showContent: true, showOwner: true },
       });
 
       const list: AidPackageInfo[] = [];
@@ -77,18 +96,29 @@ export function CoordinatorPanel() {
 
         const f = (content as any).fields;
         const lockedDonation = f.locked_donation;
-        const isLocked = lockedDonation && lockedDonation.type === 'some';
+        const isLocked = lockedDonation?.fields?.some !== undefined;
         
         let donationAmount = '0';
         if (isLocked && lockedDonation.fields?.some?.fields?.balance) {
           donationAmount = lockedDonation.fields.some.fields.balance;
         }
 
+        // Get initial shared version
+        const owner = obj.data.owner;
+        const version = owner?.Shared?.initial_shared_version || 1;
+
+        // Parse recipient from Option type
+        let recipient: string | undefined;
+        if (f.recipient?.fields?.some) {
+          recipient = f.recipient.fields.some;
+        }
+
         list.push({
           id: obj.data.objectId,
+          version,
           description: f.description,
           location: f.location,
-          status: f.status,
+          status: Number(f.status),
           donor: f.donor,
           coordinator: f.coordinator,
           proof_url: f.proof_url || '',
@@ -96,10 +126,10 @@ export function CoordinatorPanel() {
           updated_at_epoch: f.updated_at_epoch,
           donation_amount: donationAmount,
           is_locked: isLocked,
-          delivery_note: f.delivery_note || '',
+          delivery_note: f.delivery_note?.fields?.some || '',
           coordinator_approved: f.coordinator_approved || false,
           recipient_approved: f.recipient_approved || false,
-          recipient: f.recipient || undefined,
+          recipient,
         });
       }
 
@@ -111,19 +141,67 @@ export function CoordinatorPanel() {
     }
   };
 
-  const handleMarkDelivered = async (pkg: AidPackageInfo) => {
-    if (!account) return;
+  const loadVerifiedRecipients = async () => {
+    try {
+      const registryObj = await client.getObject({
+        id: AIDCHAIN_REGISTRY_ID,
+        options: { showContent: true },
+      });
 
-    const note = deliveryNotes[pkg.id] || '';
-    setStatusMsg('Sending...');
+      if (registryObj.data?.content?.dataType === 'moveObject') {
+        const fields = registryObj.data.content.fields as any;
+        const profileIds: string[] = fields.recipient_profiles || [];
+
+        const profiles: RecipientProfile[] = [];
+        for (const profileId of profileIds) {
+          try {
+            const profileObj = await client.getObject({
+              id: profileId,
+              options: { showContent: true },
+            });
+
+            if (profileObj.data?.content?.dataType === 'moveObject') {
+              const pf = profileObj.data.content.fields as any;
+              if (pf.is_verified) {
+                profiles.push({
+                  id: profileId,
+                  owner: pf.recipient,
+                  name: pf.name,
+                  location: pf.location,
+                  isVerified: true,
+                });
+              }
+            }
+          } catch (err) {
+            console.error('Error loading profile:', err);
+          }
+        }
+
+        setVerifiedRecipients(profiles);
+      }
+    } catch (error) {
+      console.error('Failed to load recipients:', error);
+    }
+  };
+
+  const handleAssignRecipient = async (pkg: AidPackageInfo) => {
+    const profileId = selectedRecipients[pkg.id];
+    if (!profileId || !account) return;
+
+    setActionLoading(pkg.id);
+    setStatusMsg('Assigning recipient...');
 
     try {
       const tx = new Transaction();
       tx.moveCall({
-        target: `${AIDCHAIN_PACKAGE_ID}::aidchain::mark_delivered`,
+        target: `${AIDCHAIN_PACKAGE_ID}::aidchain::assign_recipient`,
         arguments: [
-          tx.object(pkg.id),
-          tx.pure.string(note),
+          tx.sharedObjectRef({
+            objectId: pkg.id,
+            initialSharedVersion: pkg.version,
+            mutable: true,
+          }),
+          tx.object(profileId),
         ],
       });
 
@@ -131,30 +209,180 @@ export function CoordinatorPanel() {
         { transaction: tx },
         {
           onSuccess: async (result) => {
-            if (!result.digest) {
-              setStatusMsg('Failed');
-              return;
-            }
-
             const status = await client.waitForTransaction({
               digest: result.digest,
               options: { showEffects: true },
             });
 
             if (status.effects?.status?.status === 'success') {
-              setStatusMsg('Delivery recorded');
+              setStatusMsg('Recipient assigned successfully!');
               loadPackages();
             } else {
-              setStatusMsg('Failed');
+              setStatusMsg('Assignment failed');
             }
+            setActionLoading(null);
           },
           onError: (error) => {
             setStatusMsg(`Error: ${error.message}`);
+            setActionLoading(null);
           },
         }
       );
     } catch (error) {
       setStatusMsg(`Error: ${(error as Error).message}`);
+      setActionLoading(null);
+    }
+  };
+
+  const handleMarkDelivered = async (pkg: AidPackageInfo) => {
+    if (!account) return;
+
+    const note = deliveryNotes[pkg.id] || '';
+    setActionLoading(pkg.id);
+    setStatusMsg('Marking as delivered...');
+
+    try {
+      const encoder = new TextEncoder();
+      const tx = new Transaction();
+      tx.moveCall({
+        target: `${AIDCHAIN_PACKAGE_ID}::aidchain::mark_delivered`,
+        arguments: [
+          tx.sharedObjectRef({
+            objectId: pkg.id,
+            initialSharedVersion: pkg.version,
+            mutable: true,
+          }),
+          tx.pure(encoder.encode(note)),
+        ],
+      });
+
+      signAndExecute(
+        { transaction: tx },
+        {
+          onSuccess: async (result) => {
+            const status = await client.waitForTransaction({
+              digest: result.digest,
+              options: { showEffects: true },
+            });
+
+            if (status.effects?.status?.status === 'success') {
+              setStatusMsg('Marked as delivered!');
+              loadPackages();
+            } else {
+              setStatusMsg('Failed');
+            }
+            setActionLoading(null);
+          },
+          onError: (error) => {
+            setStatusMsg(`Error: ${error.message}`);
+            setActionLoading(null);
+          },
+        }
+      );
+    } catch (error) {
+      setStatusMsg(`Error: ${(error as Error).message}`);
+      setActionLoading(null);
+    }
+  };
+
+  const handleCoordinatorApprove = async (pkg: AidPackageInfo) => {
+    if (!account) return;
+
+    setActionLoading(pkg.id);
+    setStatusMsg('Approving...');
+
+    try {
+      const tx = new Transaction();
+      tx.moveCall({
+        target: `${AIDCHAIN_PACKAGE_ID}::aidchain::coordinator_approve`,
+        arguments: [
+          tx.sharedObjectRef({
+            objectId: pkg.id,
+            initialSharedVersion: pkg.version,
+            mutable: true,
+          }),
+        ],
+      });
+
+      signAndExecute(
+        { transaction: tx },
+        {
+          onSuccess: async (result) => {
+            const status = await client.waitForTransaction({
+              digest: result.digest,
+              options: { showEffects: true },
+            });
+
+            if (status.effects?.status?.status === 'success') {
+              setStatusMsg('Coordinator approval given!');
+              loadPackages();
+            } else {
+              setStatusMsg('Approval failed');
+            }
+            setActionLoading(null);
+          },
+          onError: (error) => {
+            setStatusMsg(`Error: ${error.message}`);
+            setActionLoading(null);
+          },
+        }
+      );
+    } catch (error) {
+      setStatusMsg(`Error: ${(error as Error).message}`);
+      setActionLoading(null);
+    }
+  };
+
+  const handleReleaseFunds = async (pkg: AidPackageInfo) => {
+    if (!account) return;
+
+    setActionLoading(pkg.id);
+    setStatusMsg('Releasing funds...');
+
+    try {
+      const tx = new Transaction();
+      tx.moveCall({
+        target: `${AIDCHAIN_PACKAGE_ID}::aidchain::release_funds`,
+        arguments: [
+          tx.sharedObjectRef({
+            objectId: AIDCHAIN_REGISTRY_ID,
+            initialSharedVersion: REGISTRY_INITIAL_SHARED_VERSION,
+            mutable: true,
+          }),
+          tx.sharedObjectRef({
+            objectId: pkg.id,
+            initialSharedVersion: pkg.version,
+            mutable: true,
+          }),
+        ],
+      });
+
+      signAndExecute(
+        { transaction: tx },
+        {
+          onSuccess: async (result) => {
+            const status = await client.waitForTransaction({
+              digest: result.digest,
+              options: { showEffects: true },
+            });
+
+            if (status.effects?.status?.status === 'success') {
+              setStatusMsg('Funds released to recipient!');
+              loadPackages();
+            } else {
+              setStatusMsg('Release failed');
+            }
+            setActionLoading(null);
+          },
+          onError: (error) => {
+            setStatusMsg(`Error: ${error.message}`);
+            setActionLoading(null);
+          },
+        }
+      );
+    } catch (error) {
+      setStatusMsg(`Error: ${(error as Error).message}`);
+      setActionLoading(null);
     }
   };
 
@@ -165,13 +393,21 @@ export function CoordinatorPanel() {
 
   const formatSui = (amount: string) => {
     const sui = Number(amount) / 1_000_000_000;
-    return sui.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+    return sui.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  };
+
+  const isCoordinatorOrDonor = (pkg: AidPackageInfo) => {
+    return account?.address === pkg.coordinator || account?.address === pkg.donor;
+  };
+
+  const isRecipient = (pkg: AidPackageInfo) => {
+    return account?.address === pkg.recipient;
   };
 
   if (loading) {
     return (
       <div className="card">
-        <h2>Packages</h2>
+        <h2>Aid Packages</h2>
         <div style={{ textAlign: 'center', padding: '60px 20px', color: '#718096' }}>
           Loading...
         </div>
@@ -182,21 +418,31 @@ export function CoordinatorPanel() {
   return (
     <div className="card">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-        <h2 style={{ margin: 0 }}>Packages</h2>
-        <button onClick={loadPackages} className="btn-primary" style={{ padding: '10px 20px', fontSize: '14px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <img src="https://cdn-icons-png.flaticon.com/512/2331/2331966.png" alt="packages" style={{ width: '28px', height: '28px' }} />
+          <h2 style={{ margin: 0 }}>Aid Packages</h2>
+        </div>
+        <button onClick={() => { loadPackages(); loadVerifiedRecipients(); }} className="btn-primary" style={{ padding: '10px 20px', fontSize: '14px' }}>
           Refresh
         </button>
       </div>
 
       {statusMsg && (
-        <div className={`message ${statusMsg.includes('recorded') ? 'message-success' : 'message-error'}`}>
+        <div style={{
+          padding: '12px 16px',
+          borderRadius: '8px',
+          marginBottom: '16px',
+          background: statusMsg.includes('success') || statusMsg.includes('!') ? '#d1fae5' : '#fee2e2',
+          color: statusMsg.includes('success') || statusMsg.includes('!') ? '#065f46' : '#991b1b',
+        }}>
           {statusMsg}
         </div>
       )}
 
       {packages.length === 0 ? (
         <div style={{ textAlign: 'center', padding: '60px 20px', color: '#718096' }}>
-          No packages yet
+          <img src="https://cdn-icons-png.flaticon.com/512/4076/4076478.png" alt="empty" style={{ width: '64px', height: '64px', opacity: 0.5, marginBottom: '12px' }} />
+          <p>No packages yet</p>
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -248,10 +494,10 @@ export function CoordinatorPanel() {
                   borderRadius: '20px',
                   fontSize: '12px',
                   fontWeight: '600',
-                  background: pkg.status === 2 ? '#dcfce7' : pkg.status === 1 ? '#fef3c7' : '#dbeafe',
-                  color: pkg.status === 2 ? '#166534' : pkg.status === 1 ? '#92400e' : '#1e40af',
+                  background: STATUS_LABELS[pkg.status]?.bg || '#f3f4f6',
+                  color: STATUS_LABELS[pkg.status]?.color || '#374151',
                 }}>
-                  {pkg.status === 0 ? 'Pending' : pkg.status === 1 ? 'In Transit' : 'Delivered'}
+                  {STATUS_LABELS[pkg.status]?.label || 'Unknown'}
                 </div>
               </div>
 
@@ -283,8 +529,12 @@ export function CoordinatorPanel() {
                       color: '#059669',
                       fontSize: '13px',
                       fontWeight: '500',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
                     }}>
-                      Locked in Escrow
+                      <img src="https://cdn-icons-png.flaticon.com/512/3064/3064197.png" alt="lock" style={{ width: '16px', height: '16px' }} />
+                      Locked
                     </div>
                   )}
                 </div>
@@ -292,7 +542,7 @@ export function CoordinatorPanel() {
                 {/* Details Grid */}
                 <div style={{ 
                   display: 'grid', 
-                  gridTemplateColumns: '1fr 1fr', 
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', 
                   gap: '12px',
                   marginBottom: '16px',
                 }}>
@@ -304,84 +554,214 @@ export function CoordinatorPanel() {
                     <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: '4px', textTransform: 'uppercase' }}>Coordinator</div>
                     <div style={{ fontSize: '13px', fontFamily: 'monospace', color: '#374151' }}>{shortenAddress(pkg.coordinator)}</div>
                   </div>
-                  {pkg.recipient && (
-                    <div style={{ padding: '12px', background: '#f9fafb', borderRadius: '8px' }}>
-                      <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: '4px', textTransform: 'uppercase' }}>Recipient</div>
-                      <div style={{ fontSize: '13px', fontFamily: 'monospace', color: '#374151' }}>{shortenAddress(pkg.recipient)}</div>
+                  <div style={{ padding: '12px', background: pkg.recipient ? '#f0fdf4' : '#fef3c7', borderRadius: '8px' }}>
+                    <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: '4px', textTransform: 'uppercase' }}>Recipient</div>
+                    <div style={{ fontSize: '13px', fontFamily: 'monospace', color: '#374151' }}>
+                      {pkg.recipient ? shortenAddress(pkg.recipient) : 'Not assigned'}
                     </div>
-                  )}
-                  <div style={{ padding: '12px', background: '#f9fafb', borderRadius: '8px' }}>
-                    <div style={{ fontSize: '11px', color: '#9ca3af', marginBottom: '4px', textTransform: 'uppercase' }}>Epoch</div>
-                    <div style={{ fontSize: '13px', color: '#374151' }}>{pkg.created_at_epoch}</div>
                   </div>
                 </div>
 
-                {/* Suiscan Link */}
-                <a
-                  href={`https://suiscan.xyz/testnet/object/${pkg.id}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{
-                    display: 'block',
-                    padding: '12px 16px',
-                    background: '#f1f5f9',
-                    borderRadius: '8px',
-                    color: '#475569',
-                    textDecoration: 'none',
-                    fontSize: '13px',
+                {/* Approval Status */}
+                {pkg.status === 2 && (
+                  <div style={{
+                    display: 'flex',
+                    gap: '12px',
                     marginBottom: '16px',
-                    transition: 'background 0.2s',
-                  }}
-                  onMouseOver={(e) => e.currentTarget.style.background = '#e2e8f0'}
-                  onMouseOut={(e) => e.currentTarget.style.background = '#f1f5f9'}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div>
-                      <div style={{ fontWeight: '500', color: '#334155', marginBottom: '2px' }}>View on Blockchain</div>
-                      <div style={{ fontSize: '11px', fontFamily: 'monospace', color: '#94a3b8' }}>{pkg.id.slice(0, 20)}...{pkg.id.slice(-8)}</div>
+                  }}>
+                    <div style={{
+                      flex: 1,
+                      padding: '12px',
+                      background: pkg.recipient_approved ? '#d1fae5' : '#fee2e2',
+                      borderRadius: '8px',
+                      textAlign: 'center',
+                    }}>
+                      <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '4px' }}>Recipient Approval</div>
+                      <div style={{ fontWeight: '600', color: pkg.recipient_approved ? '#059669' : '#dc2626' }}>
+                        {pkg.recipient_approved ? '✓ Approved' : '✗ Pending'}
+                      </div>
                     </div>
-                    <span style={{ color: '#64748b' }}></span>
-                  </div>
-                </a>
-
-                {/* Delivery Action */}
-                {pkg.status < 2 && account?.address === pkg.recipient && (
-                  <div style={{ borderTop: '1px solid #f3f4f6', paddingTop: '16px' }}>
-                    <input
-                      type="text"
-                      placeholder="Add delivery note (optional)"
-                      value={deliveryNotes[pkg.id] || ''}
-                      onChange={(e) => setDeliveryNotes({ ...deliveryNotes, [pkg.id]: e.target.value })}
-                      style={{ 
-                        marginBottom: '12px',
-                        border: '1px solid #e5e7eb',
-                        borderRadius: '8px',
-                        padding: '12px 14px',
-                        fontSize: '14px',
-                      }}
-                    />
-                    <button
-                      onClick={() => handleMarkDelivered(pkg)}
-                      style={{
-                        width: '100%',
-                        padding: '14px',
-                        background: '#059669',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '8px',
-                        fontSize: '15px',
-                        fontWeight: '600',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      Mark as Received
-                    </button>
+                    <div style={{
+                      flex: 1,
+                      padding: '12px',
+                      background: pkg.coordinator_approved ? '#d1fae5' : '#fee2e2',
+                      borderRadius: '8px',
+                      textAlign: 'center',
+                    }}>
+                      <div style={{ fontSize: '11px', color: '#6b7280', marginBottom: '4px' }}>Coordinator Approval</div>
+                      <div style={{ fontWeight: '600', color: pkg.coordinator_approved ? '#059669' : '#dc2626' }}>
+                        {pkg.coordinator_approved ? '✓ Approved' : '✗ Pending'}
+                      </div>
+                    </div>
                   </div>
                 )}
 
+                {/* Actions */}
+                <div style={{ borderTop: '1px solid #f3f4f6', paddingTop: '16px' }}>
+                  
+                  {/* Step 1: Assign Recipient (for coordinator/donor, when status=0 and no recipient) */}
+                  {pkg.status === 0 && !pkg.recipient && isCoordinatorOrDonor(pkg) && (
+                    <div style={{ marginBottom: '12px' }}>
+                      <div style={{ fontSize: '13px', fontWeight: '500', marginBottom: '8px', color: '#374151' }}>
+                        Step 1: Assign Verified Recipient
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <select
+                          value={selectedRecipients[pkg.id] || ''}
+                          onChange={(e) => setSelectedRecipients({ ...selectedRecipients, [pkg.id]: e.target.value })}
+                          style={{
+                            flex: 1,
+                            padding: '10px 12px',
+                            borderRadius: '8px',
+                            border: '1px solid #d1d5db',
+                            fontSize: '14px',
+                          }}
+                        >
+                          <option value="">Select recipient...</option>
+                          {verifiedRecipients.map(r => (
+                            <option key={r.id} value={r.id}>
+                              {r.name} - {r.location}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => handleAssignRecipient(pkg)}
+                          disabled={!selectedRecipients[pkg.id] || actionLoading === pkg.id}
+                          style={{
+                            padding: '10px 20px',
+                            background: selectedRecipients[pkg.id] ? '#3b82f6' : '#d1d5db',
+                            color: '#fff',
+                            border: 'none',
+                            borderRadius: '8px',
+                            cursor: selectedRecipients[pkg.id] ? 'pointer' : 'not-allowed',
+                            fontWeight: '500',
+                          }}
+                        >
+                          {actionLoading === pkg.id ? 'Assigning...' : 'Assign'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Step 2: Mark as Delivered (for recipient, when status=1) */}
+                  {pkg.status === 1 && isRecipient(pkg) && (
+                    <div style={{ marginBottom: '12px' }}>
+                      <div style={{ fontSize: '13px', fontWeight: '500', marginBottom: '8px', color: '#374151' }}>
+                        Step 2: Confirm Delivery
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Add delivery note (optional)"
+                        value={deliveryNotes[pkg.id] || ''}
+                        onChange={(e) => setDeliveryNotes({ ...deliveryNotes, [pkg.id]: e.target.value })}
+                        style={{ 
+                          width: '100%',
+                          marginBottom: '8px',
+                          border: '1px solid #e5e7eb',
+                          borderRadius: '8px',
+                          padding: '10px 12px',
+                          fontSize: '14px',
+                          boxSizing: 'border-box',
+                        }}
+                      />
+                      <button
+                        onClick={() => handleMarkDelivered(pkg)}
+                        disabled={actionLoading === pkg.id}
+                        style={{
+                          width: '100%',
+                          padding: '12px',
+                          background: '#059669',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '8px',
+                          fontSize: '15px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {actionLoading === pkg.id ? 'Processing...' : 'Mark as Received'}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Step 3: Coordinator Approve (for coordinator, when status=2 and not yet approved) */}
+                  {pkg.status === 2 && !pkg.coordinator_approved && isCoordinatorOrDonor(pkg) && (
+                    <div style={{ marginBottom: '12px' }}>
+                      <div style={{ fontSize: '13px', fontWeight: '500', marginBottom: '8px', color: '#374151' }}>
+                        Step 3: Coordinator Approval
+                      </div>
+                      <button
+                        onClick={() => handleCoordinatorApprove(pkg)}
+                        disabled={actionLoading === pkg.id}
+                        style={{
+                          width: '100%',
+                          padding: '12px',
+                          background: '#8b5cf6',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '8px',
+                          fontSize: '15px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {actionLoading === pkg.id ? 'Processing...' : 'Approve Delivery'}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Step 4: Release Funds (when both approved and locked) */}
+                  {pkg.status === 2 && pkg.recipient_approved && pkg.coordinator_approved && pkg.is_locked && (
+                    <div style={{ marginBottom: '12px' }}>
+                      <div style={{ fontSize: '13px', fontWeight: '500', marginBottom: '8px', color: '#374151' }}>
+                        Step 4: Release Funds
+                      </div>
+                      <button
+                        onClick={() => handleReleaseFunds(pkg)}
+                        disabled={actionLoading === pkg.id}
+                        style={{
+                          width: '100%',
+                          padding: '14px',
+                          background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '8px',
+                          fontSize: '15px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '8px',
+                        }}
+                      >
+                        <img src="https://cdn-icons-png.flaticon.com/512/3135/3135706.png" alt="release" style={{ width: '20px', height: '20px' }} />
+                        {actionLoading === pkg.id ? 'Releasing...' : `Release ${formatSui(pkg.donation_amount)} SUI to Recipient`}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Completed State */}
+                  {pkg.status === 2 && pkg.recipient_approved && pkg.coordinator_approved && !pkg.is_locked && (
+                    <div style={{
+                      padding: '16px',
+                      background: 'linear-gradient(135deg, #d1fae5, #a7f3d0)',
+                      borderRadius: '8px',
+                      textAlign: 'center',
+                    }}>
+                      <img src="https://cdn-icons-png.flaticon.com/512/7518/7518748.png" alt="done" style={{ width: '32px', height: '32px', marginBottom: '8px' }} />
+                      <div style={{ fontWeight: '600', color: '#065f46' }}>
+                        Completed - Funds Released to Recipient
+                      </div>
+                    </div>
+                  )}
+
+                </div>
+
                 {/* Delivery Note */}
-                {pkg.status === 2 && pkg.delivery_note && (
+                {pkg.delivery_note && (
                   <div style={{ 
+                    marginTop: '16px',
                     padding: '14px 16px', 
                     background: '#f0fdf4', 
                     borderRadius: '8px', 
@@ -391,6 +771,29 @@ export function CoordinatorPanel() {
                     <div style={{ fontSize: '14px', color: '#166534' }}>{pkg.delivery_note}</div>
                   </div>
                 )}
+
+                {/* Explorer Link */}
+                <a
+                  href={`https://testnet.suivision.xyz/object/${pkg.id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    marginTop: '16px',
+                    padding: '10px',
+                    background: '#f1f5f9',
+                    borderRadius: '8px',
+                    color: '#475569',
+                    textDecoration: 'none',
+                    fontSize: '13px',
+                  }}
+                >
+                  <img src="https://cdn-icons-png.flaticon.com/512/622/622669.png" alt="link" style={{ width: '14px', height: '14px' }} />
+                  View on Explorer
+                </a>
               </div>
             </div>
           ))}

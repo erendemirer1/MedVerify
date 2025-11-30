@@ -236,13 +236,14 @@ export function DAOPanel() {
     }
   };
 
-  const handleCreateProposal = async (profileId: string) => {
+  const handleCreateProposal = async (profileId: string, profileOwner: string) => {
     setCreatingProposal(profileId);
     setMessage('');
 
     try {
       const txb = new Transaction();
 
+      // V11: Pass profile_id and profile_owner as parameters instead of object reference
       txb.moveCall({
         target: `${AIDCHAIN_PACKAGE_ID}::aidchain::create_verification_proposal`,
         arguments: [
@@ -251,7 +252,8 @@ export function DAOPanel() {
             initialSharedVersion: REGISTRY_INITIAL_SHARED_VERSION,
             mutable: true,
           }),
-          txb.object(profileId),
+          txb.pure.id(profileId),
+          txb.pure.address(profileOwner),
         ],
       });
 
@@ -727,7 +729,7 @@ export function DAOPanel() {
                   )}
 
                   <button
-                    onClick={() => handleCreateProposal(profile.id)}
+                    onClick={() => handleCreateProposal(profile.id, profile.owner)}
                     disabled={creatingProposal === profile.id}
                     style={{
                       width: '100%',

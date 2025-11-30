@@ -346,33 +346,34 @@ module aidchain::aidchain {
     // ============================================
 
     /// Create recipient verification proposal (any verifier)
-    /// V10: profile is read-only, active proposal check from registry
+    /// V11: Uses profile_id and profile_owner as parameters instead of RecipientProfile object
+    /// This allows creating proposals for profiles owned by ANY address
     public entry fun create_verification_proposal(
         registry: &mut AidRegistry,
-        profile: &RecipientProfile,
+        profile_id: ID,
+        profile_owner: address,
         ctx: &mut TxContext
     ) {
         let sender = tx_context::sender(ctx);
         assert_verifier(registry, sender);
         
-        // Already verified?
-        assert!(!profile.is_verified, E_ALREADY_DELIVERED);
+        // Verify profile exists in registry
+        assert!(vector::contains(&registry.recipient_profiles, &profile_id), E_INVALID_RECIPIENT);
         
         // Already has active proposal? (V10: check from registry)
-        let profile_id = object::id(profile);
         assert!(!vector::contains(&registry.profiles_with_proposals, &profile_id), E_PROPOSAL_EXISTS);
 
         let current_epoch = tx_context::epoch(ctx);
         let expires_at = current_epoch + registry.dao_config.voting_period_epochs;
 
-        // Proposer otomatik olarak lehte oy verir
+        // Proposer automatically votes in favor
         let mut votes_for = vector::empty<address>();
         vector::push_back(&mut votes_for, sender);
 
         let proposal = VerificationProposal {
             id: object::new(ctx),
             profile_id,
-            profile_owner: profile.recipient,
+            profile_owner,
             proposer: sender,
             votes_for,
             votes_against: vector::empty<address>(),
@@ -385,10 +386,10 @@ module aidchain::aidchain {
 
         let proposal_id = object::id(&proposal);
         
-        // V10: Profile'a yazmak yerine registry'ye ekliyoruz
+        // V10: Add to registry instead of writing to profile
         vector::push_back(&mut registry.profiles_with_proposals, profile_id);
         
-        // Registry'ye proposal ekle
+        // Add proposal to registry
         vector::push_back(&mut registry.proposals, proposal_id);
 
         event::emit(ProposalCreated {

@@ -8,7 +8,6 @@ import { toB64, fromB64 } from '@mysten/sui/utils';
 import { 
   ENOKI_NETWORK, 
   SPONSORED_TX_ENABLED,
-  AIDCHAIN_PACKAGE_ID,
   SPONSOR_BACKEND_URL
 } from './config';
 
@@ -19,7 +18,7 @@ export interface SponsoredTxResult {
 }
 
 export interface UseSponsoredTransactionReturn {
-  executeSponsored: (tx: Transaction, allowedTargets?: string[]) => Promise<SponsoredTxResult>;
+  executeSponsored: (tx: Transaction) => Promise<SponsoredTxResult>;
   isLoading: boolean;
   isEnabled: boolean;
   error: string | null;
@@ -34,8 +33,7 @@ export function useSponsoredTransaction(): UseSponsoredTransactionReturn {
   const { mutateAsync: signTransaction } = useSignTransaction();
 
   const executeSponsored = useCallback(async (
-    tx: Transaction,
-    allowedTargets?: string[]
+    tx: Transaction
   ): Promise<SponsoredTxResult> => {
     if (!currentAccount) {
       return { digest: '', success: false, error: 'Wallet not connected' };
@@ -54,14 +52,7 @@ export function useSponsoredTransaction(): UseSponsoredTransactionReturn {
         onlyTransactionKind: true,
       });
 
-      const targets = allowedTargets || [
-        `${AIDCHAIN_PACKAGE_ID}::aidchain::donate`,
-        `${AIDCHAIN_PACKAGE_ID}::aidchain::register_recipient`,
-        `${AIDCHAIN_PACKAGE_ID}::aidchain::create_verification_proposal`,
-        `${AIDCHAIN_PACKAGE_ID}::aidchain::vote_on_proposal`,
-        `${AIDCHAIN_PACKAGE_ID}::aidchain::execute_proposal`,
-      ];
-
+      // Don't send allowedMoveCallTargets - let Enoki Portal allowlist handle it
       const sponsorResponse = await fetch(`${SPONSOR_BACKEND_URL}/api/sponsor`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -69,7 +60,6 @@ export function useSponsoredTransaction(): UseSponsoredTransactionReturn {
           network: ENOKI_NETWORK,
           transactionKindBytes: toB64(txBytes),
           sender: currentAccount.address,
-          allowedMoveCallTargets: targets,
         }),
       });
 

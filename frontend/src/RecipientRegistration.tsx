@@ -113,6 +113,9 @@ export function RecipientRegistration() {
 
       const txb = new Transaction();
       
+      // Convert strings to Uint8Array for Move's vector<u8>
+      const encoder = new TextEncoder();
+      
       txb.moveCall({
         target: `${AIDCHAIN_PACKAGE_ID}::aidchain::register_recipient`,
         arguments: [
@@ -121,15 +124,15 @@ export function RecipientRegistration() {
             initialSharedVersion: REGISTRY_INITIAL_SHARED_VERSION,
             mutable: true,
           }),
-          txb.pure.string(name),
-          txb.pure.string(location),
-          txb.pure.string(tcHash),
-          txb.pure.string(phone),
-          txb.pure.string(residenceBlobId),
-          txb.pure.string(incomeBlobId),
-          txb.pure.string(extraDocumentBlobId),
+          txb.pure.vector('u8', Array.from(encoder.encode(name))),
+          txb.pure.vector('u8', Array.from(encoder.encode(location))),
+          txb.pure.vector('u8', Array.from(encoder.encode(tcHash))),
+          txb.pure.vector('u8', Array.from(encoder.encode(phone))),
+          txb.pure.vector('u8', Array.from(encoder.encode(residenceBlobId))),
+          txb.pure.vector('u8', Array.from(encoder.encode(incomeBlobId))),
+          txb.pure.vector('u8', Array.from(encoder.encode(extraDocumentBlobId))),
           txb.pure.u64(parseInt(familySize) || 1),
-          txb.pure.string(description),
+          txb.pure.vector('u8', Array.from(encoder.encode(description))),
         ],
       });
 
@@ -138,9 +141,7 @@ export function RecipientRegistration() {
         setUploadProgress('⛽ Preparing gas-free transaction...');
         
         try {
-          const result = await executeSponsored(txb, [
-            `${AIDCHAIN_PACKAGE_ID}::aidchain::register_recipient`,
-          ]);
+          const result = await executeSponsored(txb);
 
           if (result.success) {
             setMessage('🎉 Registration successful! Awaiting NGO verification... (Gas fee paid by sponsor)');

@@ -5,42 +5,24 @@ import {
   useSignAndExecuteTransaction,
 } from '@mysten/dapp-kit';
 import { buildDonateTx } from './buildDonateTx';
-import { RecipientList } from './RecipientList';
 import { useSponsoredTransaction } from './useSponsoredTransaction';
-import { AIDCHAIN_PACKAGE_ID } from './config';
 
 export function DonationForm() {
   const account = useCurrentAccount();
   const { mutate: signAndExecute } = useSignAndExecuteTransaction();
   const { executeSponsored, isLoading: sponsoredLoading, isEnabled: sponsoredEnabled } = useSponsoredTransaction();
 
-  const [description] = useState('Aid Package');
-  const [location] = useState('-');
+  const [description, setDescription] = useState('Aid Package');
+  const [location, setLocation] = useState('Turkey');
   const [amount, setAmount] = useState('0.1'); // SUI
-  const [selectedRecipient, setSelectedRecipient] = useState<string>('');
-  const [selectedRecipientName, setSelectedRecipientName] = useState<string>('');
-  const [selectedRecipientDescription, setSelectedRecipientDescription] = useState<string>('');
-  const [showRecipientList, setShowRecipientList] = useState(false);
   const [txDigest, setTxDigest] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
-  const [useSponsored, setUseSponsored] = useState(true); // Default: sponsored aktif
-
-  const handleRecipientSelect = (address: string, name: string, recipientDescription?: string) => {
-    setSelectedRecipient(address);
-    setSelectedRecipientName(name);
-    setSelectedRecipientDescription(recipientDescription || '');
-    setShowRecipientList(false);
-  };
+  const [useSponsored, setUseSponsored] = useState(true);
 
   const handleDonate = async () => {
     if (!account) {
       alert('Please connect your wallet first.');
-      return;
-    }
-
-    if (!selectedRecipient) {
-      alert('Please select a recipient.');
       return;
     }
 
@@ -50,7 +32,7 @@ export function DonationForm() {
       return;
     }
 
-    const txb = buildDonateTx(description, location, selectedRecipient, amountNumber);
+    const txb = buildDonateTx(description, location, amountNumber);
 
     setLoading(true);
     setStatusMsg(null);
@@ -59,17 +41,15 @@ export function DonationForm() {
     // Use sponsored transaction (if enabled)
     if (useSponsored && sponsoredEnabled) {
       try {
-        setStatusMsg('⛽ Preparing gas-free transaction...');
+        setStatusMsg('Preparing gas-free transaction...');
         
-        const result = await executeSponsored(txb, [
-          `${AIDCHAIN_PACKAGE_ID}::aidchain::donate`,
-        ]);
+        const result = await executeSponsored(txb);
 
         setLoading(false);
 
         if (result.success) {
           setTxDigest(result.digest);
-          setStatusMsg('🎉 Donation successful! Gas fee paid by sponsor.');
+          setStatusMsg('Donation successful! Aid package created. A coordinator will assign it to a verified recipient.');
         } else {
           setStatusMsg(`Transaction failed: ${result.error}`);
         }
@@ -82,9 +62,7 @@ export function DonationForm() {
 
     // Normal transaction (fallback)
     signAndExecute(
-      {
-        transaction: txb,
-      },
+      { transaction: txb },
       {
         onSuccess: (result: any) => {
           setLoading(false);
@@ -98,15 +76,10 @@ export function DonationForm() {
           const effects = result.effects;
           const executionStatus = effects?.status?.status;
           
-          console.log('Execution status:', executionStatus);
-          console.log('Full effects:', effects);
-          
           setTxDigest(result.digest);
           
           if (executionStatus === 'failure') {
             const errorMsg = effects?.status?.error || 'Unknown error';
-            console.error('Transaction failed:', errorMsg);
-            
             if (errorMsg.includes('InsufficientCoinBalance') || 
                 errorMsg.toLowerCase().includes('insufficient')) {
               setStatusMsg('Insufficient balance! Not enough SUI in your wallet.');
@@ -117,37 +90,21 @@ export function DonationForm() {
           }
           
           if (executionStatus === 'success') {
-            setStatusMsg('Donation successfully recorded on blockchain!');
+            setStatusMsg('Donation successful! Aid package created. A coordinator will assign it to a verified recipient.');
           } else {
-            setStatusMsg(`Transaction status uncertain. Tx: ${result.digest}`);
+            setStatusMsg(`Transaction completed. Tx: ${result.digest}`);
           }
         },
         onError: (err: any) => {
           setLoading(false);
-          console.error('Transaction error:', err);
-          
-          let errorMessage = '';
-          
-          if (err?.message) {
-            errorMessage += err.message;
-          } else if (typeof err === 'string') {
-            errorMessage += err;
-          } else {
-            errorMessage += 'Transaction failed';
-          }
+          let errorMessage = err?.message || 'Transaction failed';
           
           if (errorMessage.toLowerCase().includes('insufficient') || 
               errorMessage.toLowerCase().includes('balance')) {
             errorMessage = 'Insufficient balance! Not enough SUI in your wallet.';
-          }
-          
-          if (errorMessage.toLowerCase().includes('rejected') || 
+          } else if (errorMessage.toLowerCase().includes('rejected') || 
               errorMessage.toLowerCase().includes('cancelled')) {
             errorMessage = 'Transaction cancelled by user.';
-          }
-          
-          if (errorMessage.toLowerCase().includes('gas')) {
-            errorMessage = 'Insufficient balance for gas fee.';
           }
           
           setStatusMsg(errorMessage);
@@ -161,6 +118,11 @@ export function DonationForm() {
   return (
     <div className="card donation-card">
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
+        <img 
+          src="https://cdn-icons-png.flaticon.com/512/2489/2489756.png" 
+          alt="donate" 
+          style={{ width: '32px', height: '32px' }} 
+        />
         <h2 style={{ margin: 0 }}>AidChain – Donor Panel</h2>
         {sponsoredEnabled && (
           <span style={{
@@ -174,30 +136,111 @@ export function DonationForm() {
             alignItems: 'center',
             gap: '4px',
           }}>
-            ⛽ GAS-FREE
+            <img src="https://cdn-icons-png.flaticon.com/512/2933/2933245.png" alt="gas" style={{ width: '12px', height: '12px' }} />
+            GAS-FREE
           </span>
         )}
       </div>
 
+      {/* How it works info box */}
+      <div style={{
+        padding: '16px',
+        background: 'linear-gradient(135deg, #e0f2fe 0%, #bae6fd 100%)',
+        borderRadius: '12px',
+        marginBottom: '20px',
+        border: '1px solid #7dd3fc',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+          <img src="https://cdn-icons-png.flaticon.com/512/1828/1828884.png" alt="info" style={{ width: '20px', height: '20px' }} />
+          <strong style={{ color: '#0369a1' }}>How Donations Work</strong>
+        </div>
+        <ol style={{ margin: 0, paddingLeft: '20px', color: '#075985', fontSize: '14px', lineHeight: '1.6' }}>
+          <li>You create an <strong>Aid Package</strong> with your donation</li>
+          <li>Your SUI is <strong>locked</strong> in the package</li>
+          <li>A coordinator assigns the package to a <strong>verified recipient</strong></li>
+          <li>When recipient confirms delivery, funds are <strong>released</strong></li>
+        </ol>
+      </div>
+
       {!account && (
-        <p style={{ color: 'red' }}>
+        <p style={{ color: 'red', padding: '12px', background: '#fee2e2', borderRadius: '8px' }}>
+          <img src="https://cdn-icons-png.flaticon.com/512/1828/1828843.png" alt="warning" style={{ width: '16px', height: '16px', marginRight: '8px', verticalAlign: 'middle' }} />
           Wallet not connected. Click Connect above.
         </p>
       )}
 
       {account && (
-        <p>
-          Connected address: <code>{account.address}</code>
+        <p style={{ fontSize: '13px', color: '#666', marginBottom: '20px' }}>
+          Connected: <code style={{ background: '#f3f4f6', padding: '2px 6px', borderRadius: '4px' }}>
+            {account.address.slice(0, 10)}...{account.address.slice(-8)}
+          </code>
         </p>
       )}
 
-      <label>
-        Donation Amount (SUI):
-        <input
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-        />
-      </label>
+      {/* Donation Form Fields */}
+      <div style={{ display: 'grid', gap: '16px', marginBottom: '20px' }}>
+        <div>
+          <label style={{ display: 'block', marginBottom: '6px', fontWeight: '500', color: '#374151' }}>
+            Donation Amount (SUI) *
+          </label>
+          <input
+            type="number"
+            step="0.1"
+            min="0.1"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            placeholder="0.1"
+            style={{
+              width: '100%',
+              padding: '12px',
+              borderRadius: '8px',
+              border: '1px solid #d1d5db',
+              fontSize: '16px',
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+
+        <div>
+          <label style={{ display: 'block', marginBottom: '6px', fontWeight: '500', color: '#374151' }}>
+            Description
+          </label>
+          <input
+            type="text"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Aid Package"
+            style={{
+              width: '100%',
+              padding: '12px',
+              borderRadius: '8px',
+              border: '1px solid #d1d5db',
+              fontSize: '16px',
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+
+        <div>
+          <label style={{ display: 'block', marginBottom: '6px', fontWeight: '500', color: '#374151' }}>
+            Location
+          </label>
+          <input
+            type="text"
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
+            placeholder="Turkey"
+            style={{
+              width: '100%',
+              padding: '12px',
+              borderRadius: '8px',
+              border: '1px solid #d1d5db',
+              fontSize: '16px',
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+      </div>
 
       {/* Sponsored Transaction Toggle */}
       {sponsoredEnabled && (
@@ -227,8 +270,9 @@ export function DonationForm() {
               }}
             />
             <div>
-              <div style={{ fontWeight: '600', color: useSponsored ? '#065f46' : '#374151' }}>
-                ⛽ Gas-Free Transaction
+              <div style={{ fontWeight: '600', color: useSponsored ? '#065f46' : '#374151', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <img src="https://cdn-icons-png.flaticon.com/512/2933/2933245.png" alt="gas" style={{ width: '16px', height: '16px' }} />
+                Gas-Free Transaction
               </div>
               <div style={{ fontSize: '12px', color: useSponsored ? '#047857' : '#6b7280' }}>
                 {useSponsored 
@@ -240,195 +284,96 @@ export function DonationForm() {
         </div>
       )}
 
-      {/* Recipient Selection */}
-      <div style={{ marginBottom: '20px' }}>
-        <label style={{ display: 'block', marginBottom: '10px', fontWeight: '500' }}>
-          Recipient:
-        </label>
-        {selectedRecipientName ? (
-          <div style={{
-            padding: '15px',
-            background: '#d4edda',
-            border: '2px solid #28a745',
-            borderRadius: '12px',
-          }}>
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: selectedRecipientDescription ? '12px' : 0,
-            }}>
-              <div>
-                <div style={{ fontWeight: 'bold', marginBottom: '5px' }}>
-                  {selectedRecipientName}
-                </div>
-                <div style={{ fontSize: '12px', color: '#155724' }}>
-                  {selectedRecipient.slice(0, 8)}...{selectedRecipient.slice(-6)}
-                </div>
-              </div>
-              <button
-                onClick={() => {
-                  setSelectedRecipient('');
-                  setSelectedRecipientName('');
-                  setSelectedRecipientDescription('');
-                }}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: '8px',
-                  border: 'none',
-                  background: '#dc3545',
-                  color: 'white',
-                  cursor: 'pointer',
-                  fontSize: '14px',
-                }}
-              >
-                Change
-              </button>
-            </div>
-            {selectedRecipientDescription && (
-              <div style={{
-                padding: '10px 12px',
-                background: '#c3e6cb',
-                borderRadius: '8px',
-                fontSize: '13px',
-                color: '#155724',
-                lineHeight: '1.5',
-              }}>
-                <strong>Status:</strong> {selectedRecipientDescription}
-              </div>
-            )}
-          </div>
-        ) : (
-          <button
-            onClick={() => setShowRecipientList(true)}
-            style={{
-              width: '100%',
-              padding: '15px',
-              borderRadius: '12px',
-              border: '2px dashed #667eea',
-              background: 'white',
-              color: '#667eea',
-              cursor: 'pointer',
-              fontSize: '16px',
-              fontWeight: '500',
-            }}
-          >
-            Select Recipient
-          </button>
-        )}
-      </div>
-
-      {/* Recipient List Modal */}
-      {showRecipientList && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: 'rgba(0,0,0,0.7)',
+      <button 
+        onClick={handleDonate} 
+        disabled={isProcessing || !account || !amount}
+        style={{
+          width: '100%',
+          padding: '14px 24px',
+          fontSize: '16px',
+          fontWeight: 'bold',
+          background: isProcessing || !account || !amount 
+            ? '#d1d5db'
+            : useSponsored && sponsoredEnabled 
+              ? 'linear-gradient(135deg, #10b981, #059669)' 
+              : 'linear-gradient(135deg, #667eea, #764ba2)',
+          color: '#fff',
+          border: 'none',
+          borderRadius: '10px',
+          cursor: isProcessing || !account || !amount ? 'not-allowed' : 'pointer',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          zIndex: 1000,
-          padding: '20px',
-        }}>
-          <div style={{
-            background: 'white',
-            borderRadius: '16px',
-            maxWidth: '600px',
-            width: '100%',
-            maxHeight: '80vh',
-            overflow: 'auto',
-            padding: '20px',
-          }}>
-            <div style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: '20px',
-            }}>
-              <h2 style={{ margin: 0 }}>Select Recipientin</h2>
-              <button
-                onClick={() => setShowRecipientList(false)}
-                style={{
-                  padding: '8px 16px',
-                  borderRadius: '8px',
-                  border: 'none',
-                  background: '#dc3545',
-                  color: 'white',
-                  cursor: 'pointer',
-                  fontSize: '16px',
-                }}
-              >
-                ✕
-              </button>
-            </div>
-            <RecipientList 
-              onSelectRecipient={handleRecipientSelect}
-              showVerifiedOnly={true}
-            />
-          </div>
-        </div>
-      )}
-
-      <button 
-        onClick={handleDonate} 
-        disabled={isProcessing || !account}
-        style={{
-          background: useSponsored && sponsoredEnabled 
-            ? 'linear-gradient(135deg, #10b981, #059669)' 
-            : undefined,
+          gap: '8px',
         }}
       >
-        {isProcessing 
-          ? (useSponsored && sponsoredEnabled ? '⛽ Gas-Free transaction...' : 'Processing transaction...') 
-          : (useSponsored && sponsoredEnabled ? '⛽ Gas-Free Donate' : 'Donate')}
+        {isProcessing ? (
+          'Processing...'
+        ) : (
+          <>
+            <img src="https://cdn-icons-png.flaticon.com/512/2489/2489756.png" alt="donate" style={{ width: '20px', height: '20px' }} />
+            {useSponsored && sponsoredEnabled ? 'Donate (Gas-Free)' : 'Donate'}
+          </>
+        )}
       </button>
 
       {statusMsg && (
-        <p style={{ 
-          marginTop: '0.5rem',
-          padding: '12px',
+        <div style={{ 
+          marginTop: '16px',
+          padding: '12px 16px',
           borderRadius: '8px',
-          background: statusMsg.includes('success') || statusMsg.includes('🎉') 
+          background: statusMsg.includes('successful') 
             ? '#d1fae5' 
-            : statusMsg.includes('preparing') 
+            : statusMsg.includes('Preparing') 
               ? '#dbeafe' 
               : '#fee2e2',
-          color: statusMsg.includes('success') || statusMsg.includes('🎉') 
+          color: statusMsg.includes('successful') 
             ? '#065f46' 
-            : statusMsg.includes('preparing') 
+            : statusMsg.includes('Preparing') 
               ? '#1e40af' 
               : '#991b1b',
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: '10px',
         }}>
-          {statusMsg}
-        </p>
+          <img 
+            src={statusMsg.includes('successful') 
+              ? 'https://cdn-icons-png.flaticon.com/512/7518/7518748.png'
+              : statusMsg.includes('Preparing')
+                ? 'https://cdn-icons-png.flaticon.com/512/1828/1828884.png'
+                : 'https://cdn-icons-png.flaticon.com/512/1828/1828843.png'
+            } 
+            alt="status" 
+            style={{ width: '20px', height: '20px', marginTop: '2px' }} 
+          />
+          <span>{statusMsg}</span>
+        </div>
       )}
 
       {txDigest && (
         <div style={{ marginTop: '20px' }}>
-          <p>
-            View transaction in Explorer:{' '}
+          <p style={{ fontSize: '14px', marginBottom: '12px' }}>
+            <img src="https://cdn-icons-png.flaticon.com/512/622/622669.png" alt="link" style={{ width: '14px', height: '14px', marginRight: '6px', verticalAlign: 'middle' }} />
+            View on Explorer:{' '}
             <a
-              href={`https://suiexplorer.com/txblock/${txDigest}?network=testnet`}
+              href={`https://testnet.suivision.xyz/txblock/${txDigest}`}
               target="_blank"
               rel="noreferrer"
+              style={{ color: '#667eea' }}
             >
-              {txDigest}
+              {txDigest.slice(0, 16)}...
             </a>
           </p>
           
           {/* NFT Mint Suggestion */}
           <div style={{
-            marginTop: '15px',
-            padding: '15px 20px',
+            padding: '16px 20px',
             background: 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)',
             borderRadius: '12px',
             border: '2px solid #f59e0b',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
-              <span style={{ fontSize: '24px' }}>🏆</span>
+              <img src="https://cdn-icons-png.flaticon.com/512/2583/2583344.png" alt="trophy" style={{ width: '28px', height: '28px' }} />
               <strong style={{ color: '#92400e' }}>Mint Your Impact NFT!</strong>
             </div>
             <p style={{ margin: '0 0 12px 0', color: '#78350f', fontSize: '14px' }}>
@@ -439,13 +384,13 @@ export function DonationForm() {
               href="#"
               onClick={(e) => {
                 e.preventDefault();
-                window.location.hash = '';
-                // Trigger tab change - this is a simple approach
                 const event = new CustomEvent('switchTab', { detail: 'impact-nft' });
                 window.dispatchEvent(event);
               }}
               style={{
-                display: 'inline-block',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
                 padding: '10px 20px',
                 background: 'linear-gradient(135deg, #FFD700 0%, #FFA500 100%)',
                 color: '#000',
@@ -455,7 +400,8 @@ export function DonationForm() {
                 fontSize: '14px',
               }}
             >
-              🎖️ Go to Impact NFT Panel
+              <img src="https://cdn-icons-png.flaticon.com/512/1490/1490818.png" alt="mint" style={{ width: '18px', height: '18px' }} />
+              Go to Impact NFT Panel
             </a>
           </div>
         </div>
